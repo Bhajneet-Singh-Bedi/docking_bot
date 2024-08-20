@@ -204,3 +204,13 @@ include_directories(
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+
+
+add_executable(Publisher_node src/main.cpp)
+target_link_libraries(Publisher_node ${catkin_LIBRARIES})
+# target_link_libraries(${PROJECT_NAME}_node
+#   ${catkin_LIBRARIES}
+# )
+add_dependencies(Publisher_node ${Publisher_node_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+
