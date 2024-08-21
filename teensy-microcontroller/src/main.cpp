@@ -28,12 +28,6 @@ double input2, output2, setpoint2;
 PID pid1(&input1, &output1, &setpoint1, kp, ki, kd, DIRECT);
 PID pid2(&input2, &output2, &setpoint2, kp, ki, kd, DIRECT);
 
-float integral1 = 0;
-float integral2 = 0;
-
-float lastError1 = 0;
-float lastError2 = 0;
-
 class BOT
 {
 private:
@@ -73,8 +67,8 @@ public:
     pid2.SetMode(AUTOMATIC);
   }
 
-  long getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }
-  long getCurrentRotationSpeed() { return (speed2() - speed1()) / WHEELBASE; }
+  long getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }                                               // m/s
+  long getCurrentRotationSpeed() { return ((speed2() / (WHEELDIA / 2)) - (speed1() / WHEELDIA / 2)) / WHEELBASE; } // rad/sec
 
   long speed1()
   {
@@ -168,13 +162,13 @@ public:
     {
       digitalWrite(motor2_pin1, HIGH);
       digitalWrite(motor2_pin2, LOW);
-      analogWrite(pwm_2, speed);
+      analogWrite(pwm_2, abs(speed));
     }
     else if (speed < 0)
     {
       digitalWrite(motor2_pin1, LOW);
       digitalWrite(motor2_pin2, HIGH);
-      analogWrite(pwm_2, -speed);
+      analogWrite(pwm_2, abs(speed));
     }
     else
     {
