@@ -1,5 +1,5 @@
 #include <Encoder.h>
-
+#include <PID_v1.h>
 // mot-1 conn with pwm pin
 const int motor1_pin1 = 9;
 const int motor1_pin2 = 10;
@@ -20,9 +20,13 @@ Encoder motor1Encoder(ENC1A, ENC1B);
 Encoder motor2Encoder(ENC2A, ENC2B);
 
 // using PID to control the speed/position of the motor.
-float kp = 1.0;
-float ki = 0.01;
-float kd = 0.1;
+float kp = 1.0, ki = 0.01, kd = 0.1;
+double input1, output1, setpoint1;
+double input2, output2, setpoint2;
+
+// PID controllers
+PID pid1(&input1, &output1, &setpoint1, kp, ki, kd, DIRECT);
+PID pid2(&input2, &output2, &setpoint2, kp, ki, kd, DIRECT);
 
 float integral1 = 0;
 float integral2 = 0;
@@ -32,68 +36,153 @@ float lastError2 = 0;
 
 class BOT
 {
-  private:
-    long encPos1 = 0;
-    long encPos2 = 0;
+private:
+  long encPos1 = 0;
+  long encPos2 = 0;
 
-    long lastEncPos1 = 0;
-    long lastEncPos2 = 0;
+  long lastEncPos1 = 0;
+  long lastEncPos2 = 0;
 
-    unsigned long prevT1 = 0;
-    unsigned long prevT2 = 0;
+  unsigned long prevT1 = 0;
+  unsigned long prevT2 = 0;
 
-    float WHEELBASE = 20.0; // in m
-    float WHEELDIA = 0.1;   // in m
-    float encRES = 1000.0;
+  float WHEELBASE = 20.0; // in m
+  float WHEELDIA = 0.1;   // in m
+  float encRES = 1000.0;
 
-  public:
-    void setup()
+public:
+  void setup()
+  {
+    // read pos from encoder.
+    pinMode(ENC1A, INPUT);
+    pinMode(ENC1B, INPUT);
+    pinMode(ENC2A, INPUT);
+    pinMode(ENC2B, INPUT);
+
+    // motor-1 setup
+    pinMode(motor1_pin1, OUTPUT);
+    pinMode(motor1_pin2, OUTPUT);
+    pinMode(pwm_1, OUTPUT);
+
+    // motor-2 setup
+    pinMode(motor2_pin1, OUTPUT);
+    pinMode(motor2_pin2, OUTPUT);
+    pinMode(pwm_2, OUTPUT);
+
+    pid1.SetMode(AUTOMATIC);
+    pid2.SetMode(AUTOMATIC);
+  }
+
+  long getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }
+  long getCurrentRotationSpeed() { return (speed2() - speed1()) / WHEELBASE; }
+
+  long speed1()
+  {
+    unsigned long currT = millis();
+    unsigned long delT = (currT - prevT1) / 1000.0;
+
+    encPos1 = motor1Encoder.read();
+    long encSpeed1 = (encPos1 - lastEncPos1) / delT;
+    long rps1 = encSpeed1 / encRES; // rps.
+    lastEncPos1 = encPos1;
+    return rps1 * WHEELDIA * PI; // speed (m/s)
+  }
+
+  long speed2()
+  {
+    unsigned long currT = millis();
+    unsigned long delT = (currT - prevT2) / 1000.0;
+
+    encPos2 = motor2Encoder.read();
+    long encSpeed2 = (encPos2 - lastEncPos2) * delT;
+    long rps2 = encSpeed2 / encRES; // ros.
+    lastEncPos2 = encPos2;
+    return rps2 * WHEELDIA * PI; // speed (m/s)
+  }
+
+  void setSpeed(float x, float y)
+  {
+    // x is linear speed, y is angular speed
+    // V-linear, omega-angular, L-WHEELBASE, r-wheelRad
+    // linear velocity of wheel
+    // Vr = V + (omega * L)/2
+    // Vl = V - (omega * L)/2
+
+    // rotational velocity
+    // ThetaR = Vr/r;
+    // ThetaL = Vl/r;
+
+    // rps = theta/2*PI;
+    // rpsR = ThetaR/2*PI;
+    // rpsL = ThetaL/2*PI;
+
+    float Vr = x + (y * WHEELBASE) / 2;
+    float Vl = x - (y * WHEELBASE) / 2;
+
+    float ThetaR = Vr / (WHEELDIA / 2);
+    float ThetaL = Vl / (WHEELDIA / 2);
+
+    float rpsR = ThetaR / 2 * PI;
+    float rpsL = ThetaL / 2 * PI;
+
+    setMPS(rpsR, rpsL);
+  }
+
+  void setMPS(float rpsR, float rpsL)
+  {
+    input1 = speed1() / (WHEELDIA * PI); // in rps
+    input2 = speed2() / (WHEELDIA * PI); // in rps
+
+    pid1.Compute();
+    pid2.Compute();
+
+    setMotor1Speed(constrain(output1, -255, 255));
+    setMotor2Speed(constrain(output2, -255, 255));
+  }
+
+  void setMotor1Speed(int speed)
+  {
+    if (speed > 0)
     {
-      // read pos from encoder.
-      pinMode(ENC1A, INPUT);
-      pinMode(ENC1B, INPUT);
-      pinMode(ENC2A, INPUT);
-      pinMode(ENC2B, INPUT);
-
-      // motor-1 setup
-      pinMode(motor1_pin1, OUTPUT);
-      pinMode(motor1_pin2, OUTPUT);
-      pinMode(pwm_1, OUTPUT);
-
-      // motor-2 setup
-      pinMode(motor2_pin1, OUTPUT);
-      pinMode(motor2_pin2, OUTPUT);
-      pinMode(pwm_2, OUTPUT);
+      digitalWrite(motor1_pin1, HIGH);
+      digitalWrite(motor1_pin2, LOW);
+      analogWrite(pwm_1, speed);
     }
-
-    long getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }
-    long getCurrentRotationSpeed() { return (speed2() - speed1()) / WHEELBASE; }
-
-    long speed1()
+    else if (speed < 0)
     {
-      unsigned long currT = millis();
-      unsigned long delT = (currT - prevT1)/1000.0;
-
-      encPos1 = motor1Encoder.read();
-      long encSpeed1 = (encPos1 - lastEncPos1) / delT;
-      long rps1 = encSpeed1 / encRES;
-      lastEncPos1 = encPos1;
-      return rps1 * WHEELDIA * PI;
+      digitalWrite(motor1_pin1, LOW);
+      digitalWrite(motor1_pin2, HIGH);
+      analogWrite(pwm_1, -speed);
     }
-
-    long speed2()
+    else
     {
-      unsigned long currT = millis();
-      unsigned long delT = (currT - prevT2)/1000.0;
-
-      encPos2 = motor2Encoder.read();
-      long encSpeed2 = (encPos2 - lastEncPos2) * delT;
-      long rps2 = encSpeed2 / encRES;
-      lastEncPos2 = encPos2;
-      return rps2 * WHEELDIA * PI;
+      digitalWrite(motor1_pin1, LOW);
+      digitalWrite(motor1_pin2, LOW);
+      analogWrite(pwm_1, 0);
     }
+  }
 
-    void setSpeed(){}
+  void setMotor2Speed(int speed)
+  {
+    if (speed > 0)
+    {
+      digitalWrite(motor2_pin1, HIGH);
+      digitalWrite(motor2_pin2, LOW);
+      analogWrite(pwm_2, speed);
+    }
+    else if (speed < 0)
+    {
+      digitalWrite(motor2_pin1, LOW);
+      digitalWrite(motor2_pin2, HIGH);
+      analogWrite(pwm_2, -speed);
+    }
+    else
+    {
+      digitalWrite(motor2_pin1, LOW);
+      digitalWrite(motor2_pin2, LOW);
+      analogWrite(pwm_2, 0);
+    }
+  }
 };
 
 BOT bot;
@@ -106,87 +195,5 @@ void loop()
 {
   bot.getCurrentSpeedLinear();
   bot.getCurrentRotationSpeed();
-  bot.setSpeed();
-}
-
-// void controlMotor1() {
-//   unsigned long currentTime = millis();
-//   unsigned long deltaTime = currentTime - prevT1;
-
-//   encoderPosition1 = motor1Encoder.read();
-//   long encoderSpeed1 = (encoderPosition1 - lastEncoderPosition1) * (1000.0 / deltaTime);
-//   lastEncoderPosition1 = encoderPosition1;
-
-//   float error1 = targetSpeed1 - encoderSpeed1;
-//   integral1 += error1 * deltaTime;
-//   float derivative1 = (error1 - lastError1) / deltaTime;
-//   float output1 = kp * error1 + ki * integral1 + kd * derivative1;
-
-//   setMotor1Speed(constrain(output1, -255, 255));
-
-//   lastError1 = error1;
-//   prevT1 = currentTime;
-// }
-
-// void controlMotor2() {
-//   unsigned long currentTime = millis();
-//   unsigned long deltaTime = currentTime - prevT2;
-
-//   encoderPosition2 = motor2Encoder.read();
-//   long encoderSpeed2 = (encoderPosition2 - lastEncoderPosition2) * (1000.0 / deltaTime);
-//   lastEncoderPosition2 = encoderPosition2;
-
-//   float error2 = targetSpeed2 - encoderSpeed2;
-//   integral2 += error2 * deltaTime;
-//   float derivative2 = (error2 - lastError2) / deltaTime;
-//   float output2 = kp * error2 + ki * integral2 + kd * derivative2;
-
-//   setMotor2Speed(constrain(output2, -255, 255));
-
-//   lastError2 = error2;
-//   prevT2 = currentTime;
-// }
-
-void setMotor1Speed(int speed)
-{
-  if (speed > 0)
-  {
-    digitalWrite(motor1_pin1, HIGH);
-    digitalWrite(motor1_pin2, LOW);
-    analogWrite(pwm_1, speed);
-  }
-  else if (speed < 0)
-  {
-    digitalWrite(motor1_pin1, LOW);
-    digitalWrite(motor1_pin2, HIGH);
-    analogWrite(pwm_1, -speed);
-  }
-  else
-  {
-    digitalWrite(motor1_pin1, LOW);
-    digitalWrite(motor1_pin2, LOW);
-    analogWrite(pwm_1, 0);
-  }
-}
-
-void setMotor2Speed(int speed)
-{
-  if (speed > 0)
-  {
-    digitalWrite(motor2_pin1, HIGH);
-    digitalWrite(motor2_pin2, LOW);
-    analogWrite(pwm_2, speed);
-  }
-  else if (speed < 0)
-  {
-    digitalWrite(motor2_pin1, LOW);
-    digitalWrite(motor2_pin2, HIGH);
-    analogWrite(pwm_2, -speed);
-  }
-  else
-  {
-    digitalWrite(motor2_pin1, LOW);
-    digitalWrite(motor2_pin2, LOW);
-    analogWrite(pwm_2, 0);
-  }
+  bot.setSpeed(3.0, 3);
 }
