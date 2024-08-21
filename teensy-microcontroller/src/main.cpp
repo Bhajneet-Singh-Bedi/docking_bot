@@ -16,13 +16,8 @@ const int ENC1B = 3;
 const int ENC2A = 4;
 const int ENC2B = 5;
 
-int pos1 = 0, pos2 = 0;
-
 Encoder motor1Encoder(ENC1A, ENC1B);
 Encoder motor2Encoder(ENC2A, ENC2B);
-
-volatile long targetSpeed1 = 0;
-volatile long targetSpeed2 = 0;
 
 // using PID to control the speed/position of the motor.
 float kp = 1.0;
@@ -37,74 +32,86 @@ float lastError2 = 0;
 
 class BOT
 {
+  private:
+    long encPos1 = 0;
+    long encPos2 = 0;
 
-private:
-  long encoderPosition1 = 0;
-  long encoderPosition2 = 0;
+    long lastEncPos1 = 0;
+    long lastEncPos2 = 0;
 
-  long lastEncoderPosition1 = 0;
-  long lastEncoderPosition2 = 0;
+    unsigned long prevT1 = 0;
+    unsigned long prevT2 = 0;
 
-  unsigned long lastTime1 = 0;
-  unsigned long lastTime2 = 0;
+    float WHEELBASE = 20.0; // in m
+    float WHEELDIA = 0.1;   // in m
+    float encRES = 1000.0;
 
-public:
-  void setup()
-  {
-    // read pos from encoder.
-    pinMode(ENC1A, INPUT);
-    pinMode(ENC1B, INPUT);
-    pinMode(ENC2A, INPUT);
-    pinMode(ENC2B, INPUT);
+  public:
+    void setup()
+    {
+      // read pos from encoder.
+      pinMode(ENC1A, INPUT);
+      pinMode(ENC1B, INPUT);
+      pinMode(ENC2A, INPUT);
+      pinMode(ENC2B, INPUT);
 
-    // motor-1 setup
-    pinMode(motor1_pin1, OUTPUT);
-    pinMode(motor1_pin2, OUTPUT);
-    pinMode(pwm_1, OUTPUT);
+      // motor-1 setup
+      pinMode(motor1_pin1, OUTPUT);
+      pinMode(motor1_pin2, OUTPUT);
+      pinMode(pwm_1, OUTPUT);
 
-    // motor-2 setup
-    pinMode(motor2_pin1, OUTPUT);
-    pinMode(motor2_pin2, OUTPUT);
-    pinMode(pwm_2, OUTPUT);
-  }
-  void getCurrentSpeedLinear()
-  {
-    unsigned long currentTime = millis();
-    unsigned long deltaTime = currentTime - lastTime1;
+      // motor-2 setup
+      pinMode(motor2_pin1, OUTPUT);
+      pinMode(motor2_pin2, OUTPUT);
+      pinMode(pwm_2, OUTPUT);
+    }
 
-    encoderPosition1 = motor1Encoder.read();
-    long encoderSpeed1 = (encoderPosition1 - lastEncoderPosition1) * (1000.0 / deltaTime);
-    lastEncoderPosition1 = encoderPosition1;
-  }
+    long getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }
+    long getCurrentRotationSpeed() { return (speed2() - speed1()) / WHEELBASE; }
 
-  void getCurrentRotationSpeed() {}
+    long speed1()
+    {
+      unsigned long currT = millis();
+      unsigned long delT = (currT - prevT1)/1000.0;
 
-  void setSpeedLinear()
-  {
-  }
-  void setSpeedRotational()
-  {
-  }
+      encPos1 = motor1Encoder.read();
+      long encSpeed1 = (encPos1 - lastEncPos1) / delT;
+      long rps1 = encSpeed1 / encRES;
+      lastEncPos1 = encPos1;
+      return rps1 * WHEELDIA * PI;
+    }
+
+    long speed2()
+    {
+      unsigned long currT = millis();
+      unsigned long delT = (currT - prevT2)/1000.0;
+
+      encPos2 = motor2Encoder.read();
+      long encSpeed2 = (encPos2 - lastEncPos2) * delT;
+      long rps2 = encSpeed2 / encRES;
+      lastEncPos2 = encPos2;
+      return rps2 * WHEELDIA * PI;
+    }
+
+    void setSpeed(){}
 };
 
 BOT bot;
 void setup()
 {
-
   bot.setup();
-  Serial.begin(9600);
 }
 
 void loop()
 {
-
-  bot.setSpeedLinear();
-  bot.setSpeedRotational();
+  bot.getCurrentSpeedLinear();
+  bot.getCurrentRotationSpeed();
+  bot.setSpeed();
 }
 
 // void controlMotor1() {
 //   unsigned long currentTime = millis();
-//   unsigned long deltaTime = currentTime - lastTime1;
+//   unsigned long deltaTime = currentTime - prevT1;
 
 //   encoderPosition1 = motor1Encoder.read();
 //   long encoderSpeed1 = (encoderPosition1 - lastEncoderPosition1) * (1000.0 / deltaTime);
@@ -118,12 +125,12 @@ void loop()
 //   setMotor1Speed(constrain(output1, -255, 255));
 
 //   lastError1 = error1;
-//   lastTime1 = currentTime;
+//   prevT1 = currentTime;
 // }
 
 // void controlMotor2() {
 //   unsigned long currentTime = millis();
-//   unsigned long deltaTime = currentTime - lastTime2;
+//   unsigned long deltaTime = currentTime - prevT2;
 
 //   encoderPosition2 = motor2Encoder.read();
 //   long encoderSpeed2 = (encoderPosition2 - lastEncoderPosition2) * (1000.0 / deltaTime);
@@ -137,7 +144,7 @@ void loop()
 //   setMotor2Speed(constrain(output2, -255, 255));
 
 //   lastError2 = error2;
-//   lastTime2 = currentTime;
+//   prevT2 = currentTime;
 // }
 
 void setMotor1Speed(int speed)
