@@ -5,26 +5,27 @@
 #define head1 0xAA
 #define head2 0x55
 #define sendType_velocity 0x11
+
+// TODO: For the user to change PID will
 #define sendType_pid 0x12
-#define sendType_params 0x13
 
 // mot-1 conn with pwm pin
-const int motor1_pin1 = 9;
-const int motor1_pin2 = 10;
+const int motor1_pin1 = 2;
+const int motor1_pin2 = 3;
 const int pwm_1 = 6;
 
 // mot-2 conn with pwm pin
-const int motor2_pin1 = 11;
-const int motor2_pin2 = 12;
+const int motor2_pin1 = 22;
+const int motor2_pin2 = 23;
 const int pwm_2 = 7;
 
 // ENC pins
-const int ENC1A = 2;
-const int ENC1B = 3;
-const int ENC2A = 4;
-const int ENC2B = 5;
+const int ENC1A = 4;
+const int ENC1B = 5;
+const int ENC2A = 21;
+const int ENC2B = 20;
 
-const int ss = 8;
+const int ss = 10;
 
 double encPos1 = 0;
 double encPos2 = 0;
@@ -43,7 +44,7 @@ Encoder motor1Encoder(ENC1A, ENC1B);
 Encoder motor2Encoder(ENC2A, ENC2B);
 
 // using PID to control the speed/position of the motor.
-float kp = 1.0, ki = 0.01, kd = 0.1;
+float kp = 1.0, ki = 0.0, kd = 0.0;
 double input1, output1, setpoint1;
 double input2, output2, setpoint2;
 
@@ -131,10 +132,10 @@ public:
     float rpsR = ThetaR / 2 * PI;
     float rpsL = ThetaL / 2 * PI;
 
-    sebufferS(rpsR, rpsL);
+    setMPS(rpsR, rpsL);
   }
 
-  void sebufferS(float rpsR, float rpsL)
+  void setMPS(float rpsR, float rpsL)
   {
     input1 = speed1() / (WHEELDIA * PI); // in rps
     input2 = speed2() / (WHEELDIA * PI); // in rps
@@ -210,23 +211,32 @@ void setup()
 
 void loop()
 {
-  static uint8_t buffer[9];
+  static uint8_t buffer[15];
 
   double x = bot.getCurrentSpeedLinear();
   double yaw = bot.getCurrentRotationSpeed();
+
+  int16_t X = x;
+  int16_t YAW = yaw;
   // digitalWrite(ss, LOW);
   buffer[0] = head1;
   buffer[1] = head2;
-  buffer[2] = 0x09;
+  buffer[2] = 0x0f;
   buffer[3] = sendType_velocity;
-  buffer[4] = ((int16_t)(x * 1000) >> 8) & 0xff;
-  buffer[5] = ((int16_t)(x * 1000)) & 0xff;
-  buffer[6] = ((int16_t)(yaw * 1000) >> 8) & 0xff;
-  buffer[7] = ((int16_t)(yaw * 1000)) & 0xff;
-  buffer[8] = checksum(buffer, 9);
-  SPI.transfer(buffer, 9);
+  buffer[4] = (X >> 8) & 0xff;
+  buffer[5] = X & 0xff;
+  buffer[6] = (YAW >> 8) & 0xff;
+  buffer[7] = YAW & 0xff;
+  buffer[8] = checksum(buffer, 15);
+  SPI.transfer(0);
+  SPI.transfer(buffer, 15);
 
-  // Same for this one.
-  bot.setSpeed(x, yaw);
+  // for setting speed.
+  if (buffer[3] == sendType_velocity)
+  {
+    int16_t X_rec = (buffer[4] << 8) | buffer[5];
+    int16_t YAW_rec = (buffer[6] << 8) | buffer[7];
+    bot.setSpeed(X_rec, YAW_rec);
+  }
   // digitalWrite(ss, HIGH);
 }
