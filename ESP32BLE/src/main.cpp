@@ -8,7 +8,8 @@
 #include <Arduino.h>
 #include "WiFi.h"
 #include <ros.h>
-#include <std_msgs/String.h>
+// #include <std_msgs/String.h>
+#include <geometry_msgs/Pose.h>
 
 IPAddress server(192, 168, 205, 237);
 uint16_t serverPort = 11411;
@@ -20,10 +21,16 @@ char hello[13] = "hello world!";
 uint16_t period = 1000;
 uint32_t last_time = 0;
 
+
+int coord1[2] = {4, 3};
+int coord2[2] = {1, 2};
+int coord3[2] = {5, 6};
+
 ros::NodeHandle nh;
 // Make a chatter publisher
-std_msgs::String str_msg;
-ros::Publisher chatter("chatter", &str_msg);
+// std_msgs::String str_msg;
+geometry_msgs::Pose pose_msg;
+ros::Publisher coord("docking_coord", &pose_msg);
 
 void setupWiFi();
 
@@ -40,7 +47,7 @@ void setup()
   Serial.println(nh.getHardware()->getLocalIP());
 
   // Start to be polite
-  nh.advertise(chatter);
+  nh.advertise(coord);
 }
 
 void loop()
@@ -50,10 +57,13 @@ void loop()
     last_time = millis();
     if (nh.connected())
     {
-      Serial.println("Connected");
+      // Serial.println("Connected");
       // Say hello
-      str_msg.data = hello;
-      chatter.publish(&str_msg);
+      // str_msg.data = hello;
+      
+      pose_msg.position.x = 4.5;
+      pose_msg.position.y = 2.5;
+      coord.publish(&pose_msg);
     }
     else
     {
