@@ -1,242 +1,262 @@
-#include <Encoder.h>
-#include <PID_v1.h>
-#include <SPI.h>
+#if (ARDUINO >= 100)
+#include <Arduino.h>
+#else
+#include <WProgram.h>
+#endif
 
-#define head1 0xAA
-#define head2 0x55
-#define sendType_velocity 0x11
+#include <Servo.h>
 
-// TODO: For the user to change PID will
-#define sendType_pid 0x12
+#include "ros.h"
+#include "ros/time.h"
+// header file for publishing velocities for odom
+#include "lino_msgs/Velocities.h"
+// header file for cmd_subscribing to "cmd_vel"
+#include "geometry_msgs/Twist.h"
+// header file for pid server
+#include "lino_msgs/PID.h"
+// header file for imu
+#include "lino_msgs/Imu.h"
 
-// mot-1 conn with pwm pin
-const int motor1_pin1 = 2;
-const int motor1_pin2 = 3;
-const int pwm_1 = 6;
+#include "lino_base_config.h"
+#include "Motor.h"
+#include "Kinematics.h"
+#include "PID.h"
+#include "Imu.h"
 
-// mot-2 conn with pwm pin
-const int motor2_pin1 = 22;
-const int motor2_pin2 = 23;
-const int pwm_2 = 7;
+#define ENCODER_OPTIMIZE_INTERRUPTS // comment this out on Non-Teensy boards
+#include "Encoder.h"
 
-// ENC pins
-const int ENC1A = 4;
-const int ENC1B = 5;
-const int ENC2A = 21;
-const int ENC2B = 20;
+#define IMU_PUBLISH_RATE 20 // hz
+#define COMMAND_RATE 20     // hz
+#define DEBUG_RATE 5
 
-const int ss = 10;
+Encoder motor1_encoder(MOTOR1_ENCODER_A, MOTOR1_ENCODER_B, COUNTS_PER_REV);
+Encoder motor2_encoder(MOTOR2_ENCODER_A, MOTOR2_ENCODER_B, COUNTS_PER_REV);
+Encoder motor3_encoder(MOTOR3_ENCODER_A, MOTOR3_ENCODER_B, COUNTS_PER_REV);
+Encoder motor4_encoder(MOTOR4_ENCODER_A, MOTOR4_ENCODER_B, COUNTS_PER_REV);
 
-double encPos1 = 0;
-double encPos2 = 0;
+Servo steering_servo;
 
-double lastEncPos1 = 0;
-double lastEncPos2 = 0;
+Controller motor1_controller(Controller::MOTOR_DRIVER, MOTOR1_PWM, MOTOR1_DIR);
+Controller motor2_controller(Controller::MOTOR_DRIVER, MOTOR2_PWM, MOTOR2_DIR);
+Controller motor3_controller(Controller::MOTOR_DRIVER, MOTOR3_PWM, MOTOR3_DIR);
+Controller motor4_controller(Controller::MOTOR_DRIVER, MOTOR4_PWM, MOTOR4_DIR);
 
-double prevT1 = 0;
-double prevT2 = 0;
+PID motor1_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor2_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor3_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
+PID motor4_pid(PWM_MIN, PWM_MAX, K_P, K_I, K_D);
 
-float WHEELBASE = 20.0; // in m
-float WHEELDIA = 0.1;   // in m
-float encRES = 1000.0;
+Kinematics kinematics(Kinematics::LINO_BASE, MAX_RPM, WHEEL_DIAMETER, FR_WHEELS_DISTANCE, LR_WHEELS_DISTANCE);
 
-Encoder motor1Encoder(ENC1A, ENC1B);
-Encoder motor2Encoder(ENC2A, ENC2B);
+float g_req_linear_vel_x = 0;
+float g_req_linear_vel_y = 0;
+float g_req_angular_vel_z = 0;
 
-// using PID to control the speed/position of the motor.
-float kp = 1.0, ki = 0.0, kd = 0.0;
-double input1, output1, setpoint1;
-double input2, output2, setpoint2;
+unsigned long g_prev_command_time = 0;
 
-// PID controllers
-PID pid1(&input1, &output1, &setpoint1, kp, ki, kd, DIRECT);
-PID pid2(&input2, &output2, &setpoint2, kp, ki, kd, DIRECT);
+// callback function prototypes
+void commandCallback(const geometry_msgs::Twist &cmd_msg);
+void PIDCallback(const lino_msgs::PID &pid);
 
-class BOT
-{
-public:
-  void setup()
-  {
-    pinMode(ENC1A, INPUT);
-    pinMode(ENC1B, INPUT);
-    pinMode(ENC2A, INPUT);
-    pinMode(ENC2B, INPUT);
+ros::NodeHandle nh;
 
-    // motor-1 setup
-    pinMode(motor1_pin1, OUTPUT);
-    pinMode(motor1_pin2, OUTPUT);
-    pinMode(pwm_1, OUTPUT);
+ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", commandCallback);
+ros::Subscriber<lino_msgs::PID> pid_sub("pid", PIDCallback);
 
-    // motor-2 setup
-    pinMode(motor2_pin1, OUTPUT);
-    pinMode(motor2_pin2, OUTPUT);
-    pinMode(pwm_2, OUTPUT);
+lino_msgs::Imu raw_imu_msg;
+ros::Publisher raw_imu_pub("raw_imu", &raw_imu_msg);
 
-    pid1.SetMode(AUTOMATIC);
-    pid2.SetMode(AUTOMATIC);
+lino_msgs::Velocities raw_vel_msg;
+ros::Publisher raw_vel_pub("raw_vel", &raw_vel_msg);
 
-    pinMode(ss, OUTPUT);
-    digitalWrite(ss, LOW);
-    SPI.beginTransaction(SPISettings(14000000, MSBFIRST, SPI_MODE0));
-  }
-
-  double getCurrentSpeedLinear() { return (speed1() + speed2()) / 2; }                                               // m/s
-  double getCurrentRotationSpeed() { return ((speed2() / (WHEELDIA / 2)) - (speed1() / WHEELDIA / 2)) / WHEELBASE; } // rad/sec
-
-  double speed1()
-  {
-    double currT = millis();
-    double delT = (currT - prevT1) / 1000.0;
-
-    encPos1 = motor1Encoder.read();
-    double encSpeed1 = (encPos1 - lastEncPos1) / delT;
-    double rps1 = encSpeed1 / encRES; // rps.
-    lastEncPos1 = encPos1;
-    return rps1 * WHEELDIA * PI; // speed (m/s)
-  }
-
-  double speed2()
-  {
-    double currT = millis();
-    double delT = (currT - prevT2) / 1000.0;
-
-    encPos2 = motor2Encoder.read();
-    double encSpeed2 = (encPos2 - lastEncPos2) * delT;
-    double rps2 = encSpeed2 / encRES; // ros.
-    lastEncPos2 = encPos2;
-    return rps2 * WHEELDIA * PI; // speed (m/s)
-  }
-
-  void setSpeed(float x, float yaw)
-  {
-    // x is linear speed, yaw is angular speed
-    // V-linear, omega-angular, L-WHEELBASE, r-wheelRad
-    // linear velocity of wheel
-    // Vr = V + (omega * L)/2
-    // Vl = V - (omega * L)/2
-
-    // rotational velocity
-    // ThetaR = Vr/r;
-    // ThetaL = Vl/r;
-
-    // rps = theta/2*PI;
-    // rpsR = ThetaR/2*PI;
-    // rpsL = ThetaL/2*PI;
-
-    float Vr = x + (yaw * WHEELBASE) / 2;
-    float Vl = x - (yaw * WHEELBASE) / 2;
-
-    float ThetaR = Vr / (WHEELDIA / 2);
-    float ThetaL = Vl / (WHEELDIA / 2);
-
-    float rpsR = ThetaR / 2 * PI;
-    float rpsL = ThetaL / 2 * PI;
-
-    setMPS(rpsR, rpsL);
-  }
-
-  void setMPS(float rpsR, float rpsL)
-  {
-    input1 = speed1() / (WHEELDIA * PI); // in rps
-    input2 = speed2() / (WHEELDIA * PI); // in rps
-
-    pid1.Compute();
-    pid2.Compute();
-
-    setMotor1Speed(constrain(output1, -255, 255));
-    setMotor2Speed(constrain(output2, -255, 255));
-  }
-
-  void setMotor1Speed(int speed)
-  {
-    if (speed > 0)
-    {
-      digitalWrite(motor1_pin1, HIGH);
-      digitalWrite(motor1_pin2, LOW);
-      analogWrite(pwm_1, abs(speed));
-    }
-    else if (speed < 0)
-    {
-      digitalWrite(motor1_pin1, LOW);
-      digitalWrite(motor1_pin2, HIGH);
-      analogWrite(pwm_1, abs(speed));
-    }
-    else
-    {
-      digitalWrite(motor1_pin1, LOW);
-      digitalWrite(motor1_pin2, LOW);
-      analogWrite(pwm_1, 0);
-    }
-  }
-
-  void setMotor2Speed(int speed)
-  {
-    if (speed > 0)
-    {
-      digitalWrite(motor2_pin1, HIGH);
-      digitalWrite(motor2_pin2, LOW);
-      analogWrite(pwm_2, abs(speed));
-    }
-    else if (speed < 0)
-    {
-      digitalWrite(motor2_pin1, LOW);
-      digitalWrite(motor2_pin2, HIGH);
-      analogWrite(pwm_2, abs(speed));
-    }
-    else
-    {
-      digitalWrite(motor2_pin1, LOW);
-      digitalWrite(motor2_pin2, LOW);
-      analogWrite(pwm_2, 0);
-    }
-  }
-};
-
-uint8_t checksum(uint8_t *buf, size_t len)
-{
-  uint8_t sum = 0x00;
-  for (int i = 0; i < len; i++)
-  {
-    sum += *(buf + i);
-  }
-
-  return sum;
-}
-
-BOT bot;
 void setup()
 {
-  bot.setup();
+    steering_servo.attach(STEERING_PIN);
+    steering_servo.write(90);
+
+    nh.initNode();
+    nh.getHardware()->setBaud(57600);
+    nh.subscribe(pid_sub);
+    nh.subscribe(cmd_sub);
+    nh.advertise(raw_vel_pub);
+    nh.advertise(raw_imu_pub);
+
+    while (!nh.connected())
+    {
+        nh.spinOnce();
+    }
+    nh.loginfo("LINOBASE CONNECTED");
+    delay(1);
+}
+void printDebug();
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max);
+float steer(float steering_angle);
+void PIDCallback(const lino_msgs::PID &pid)
+{
+    // callback function every time PID constants are received from lino_pid for tuning
+    // this callback receives pid object where P,I, and D constants are stored
+    motor1_pid.updateConstants(pid.p, pid.i, pid.d);
+    motor2_pid.updateConstants(pid.p, pid.i, pid.d);
+    motor3_pid.updateConstants(pid.p, pid.i, pid.d);
+    motor4_pid.updateConstants(pid.p, pid.i, pid.d);
+}
+
+void commandCallback(const geometry_msgs::Twist &cmd_msg)
+{
+    // callback function every time linear and angular speed is received from 'cmd_vel' topic
+    // this callback function receives cmd_msg object where linear and angular speed are stored
+    g_req_linear_vel_x = cmd_msg.linear.x;
+    g_req_linear_vel_y = cmd_msg.linear.y;
+    g_req_angular_vel_z = cmd_msg.angular.z;
+
+    g_prev_command_time = millis();
+}
+
+void moveBase()
+{
+    // get the required rpm for each motor based on required velocities, and base used
+    Kinematics::rpm req_rpm = kinematics.getRPM(g_req_linear_vel_x, g_req_linear_vel_y, g_req_angular_vel_z);
+
+    // get the current speed of each motor
+    int current_rpm1 = motor1_encoder.getRPM();
+    int current_rpm2 = motor2_encoder.getRPM();
+    int current_rpm3 = motor3_encoder.getRPM();
+    int current_rpm4 = motor4_encoder.getRPM();
+
+    // the required rpm is capped at -/+ MAX_RPM to prevent the PID from having too much error
+    // the PWM value sent to the motor driver is the calculated PID based on required RPM vs measured RPM
+    motor1_controller.spin(motor1_pid.compute(req_rpm.motor1, current_rpm1));
+    motor2_controller.spin(motor2_pid.compute(req_rpm.motor2, current_rpm2));
+    motor3_controller.spin(motor3_pid.compute(req_rpm.motor3, current_rpm3));
+    motor4_controller.spin(motor4_pid.compute(req_rpm.motor4, current_rpm4));
+
+    Kinematics::velocities current_vel;
+
+    if (kinematics.base_platform == Kinematics::ACKERMANN || kinematics.base_platform == Kinematics::ACKERMANN1)
+    {
+        float current_steering_angle;
+
+        current_steering_angle = steer(g_req_angular_vel_z);
+        current_vel = kinematics.getVelocities(current_steering_angle, current_rpm1, current_rpm2);
+    }
+    else
+    {
+        current_vel = kinematics.getVelocities(current_rpm1, current_rpm2, current_rpm3, current_rpm4);
+    }
+
+    // pass velocities to publisher object
+    raw_vel_msg.linear_x = current_vel.linear_x;
+    raw_vel_msg.linear_y = current_vel.linear_y;
+    raw_vel_msg.angular_z = current_vel.angular_z;
+
+    // publish raw_vel_msg
+    raw_vel_pub.publish(&raw_vel_msg);
+}
+
+void stopBase()
+{
+    g_req_linear_vel_x = 0;
+    g_req_linear_vel_y = 0;
+    g_req_angular_vel_z = 0;
+}
+
+void publishIMU()
+{
+    // pass accelerometer data to imu object
+    raw_imu_msg.linear_acceleration = readAccelerometer();
+
+    // pass gyroscope data to imu object
+    raw_imu_msg.angular_velocity = readGyroscope();
+
+    // pass accelerometer data to imu object
+    raw_imu_msg.magnetic_field = readMagnetometer();
+
+    // publish raw_imu_msg
+    raw_imu_pub.publish(&raw_imu_msg);
+}
+
+float steer(float steering_angle)
+{
+    // steering function for ACKERMANN base
+    float servo_steering_angle;
+
+    steering_angle = constrain(steering_angle, -MAX_STEERING_ANGLE, MAX_STEERING_ANGLE);
+    servo_steering_angle = mapFloat(steering_angle, -MAX_STEERING_ANGLE, MAX_STEERING_ANGLE, PI, 0) * (180 / PI);
+
+    steering_servo.write(servo_steering_angle);
+
+    return steering_angle;
+}
+
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
+{
+    return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+void printDebug()
+{
+    char buffer[50];
+
+    sprintf(buffer, "Encoder FrontLeft  : %ld", motor1_encoder.read());
+    nh.loginfo(buffer);
+    sprintf(buffer, "Encoder FrontRight : %ld", motor2_encoder.read());
+    nh.loginfo(buffer);
+    sprintf(buffer, "Encoder RearLeft   : %ld", motor3_encoder.read());
+    nh.loginfo(buffer);
+    sprintf(buffer, "Encoder RearRight  : %ld", motor4_encoder.read());
+    nh.loginfo(buffer);
 }
 
 void loop()
 {
-  static uint8_t buffer[15];
+    static unsigned long prev_control_time = 0;
+    static unsigned long prev_imu_time = 0;
+    static unsigned long prev_debug_time = 0;
+    static bool imu_is_initialized;
 
-  double x = bot.getCurrentSpeedLinear();
-  double yaw = bot.getCurrentRotationSpeed();
+    // this block drives the robot based on defined rate
+    if ((millis() - prev_control_time) >= (1000 / COMMAND_RATE))
+    {
+        moveBase();
+        prev_control_time = millis();
+    }
 
-  int16_t X = x;
-  int16_t YAW = yaw;
-  // digitalWrite(ss, LOW);
-  buffer[0] = head1;
-  buffer[1] = head2;
-  buffer[2] = 0x0f;
-  buffer[3] = sendType_velocity;
-  buffer[4] = (X >> 8) & 0xff;
-  buffer[5] = X & 0xff;
-  buffer[6] = (YAW >> 8) & 0xff;
-  buffer[7] = YAW & 0xff;
-  buffer[8] = checksum(buffer, 15);
-  SPI.transfer(0);
-  SPI.transfer(buffer, 15);
+    // this block stops the motor when no command is received
+    if ((millis() - g_prev_command_time) >= 400)
+    {
+        stopBase();
+    }
+    /*
+    // this block publishes the IMU data based on defined rate
+    if ((millis() - prev_imu_time) >= (1000 / IMU_PUBLISH_RATE))
+    {
+        // sanity check if the IMU is connected
+        if (!imu_is_initialized)
+        {
+            imu_is_initialized = initIMU();
 
-  // for setting speed.
-  if (buffer[3] == sendType_velocity)
-  {
-    int16_t X_rec = (buffer[4] << 8) | buffer[5];
-    int16_t YAW_rec = (buffer[6] << 8) | buffer[7];
-    bot.setSpeed(X_rec, YAW_rec);
-  }
-  // digitalWrite(ss, HIGH);
+            if (imu_is_initialized)
+                nh.loginfo("IMU Initialized");
+            else
+                nh.logfatal("IMU failed to initialize. Check your IMU connection.");
+        }
+        else
+        {
+            publishIMU();
+        }
+        prev_imu_time = millis();
+    }
+    */
+    // this block displays the encoder readings. change DEBUG to 0 if you don't want to display
+    if (DEBUG)
+    {
+        if ((millis() - prev_debug_time) >= (1000 / DEBUG_RATE))
+        {
+            printDebug();
+            prev_debug_time = millis();
+        }
+    }
+    // call all the callbacks waiting to be called
+    nh.spinOnce();
 }
