@@ -21,7 +21,6 @@
 #include "Motor.h"
 #include "Kinematics.h"
 #include "PID.h"
-#include "Imu.h"
 
 #define ENCODER_OPTIMIZE_INTERRUPTS // comment this out on Non-Teensy boards
 #include "Encoder.h"
@@ -64,8 +63,6 @@ ros::NodeHandle nh;
 ros::Subscriber<geometry_msgs::Twist> cmd_sub("cmd_vel", commandCallback);
 ros::Subscriber<lino_msgs::PID> pid_sub("pid", PIDCallback);
 
-lino_msgs::Imu raw_imu_msg;
-ros::Publisher raw_imu_pub("raw_imu", &raw_imu_msg);
 
 lino_msgs::Velocities raw_vel_msg;
 ros::Publisher raw_vel_pub("raw_vel", &raw_vel_msg);
@@ -80,7 +77,7 @@ void setup()
     nh.subscribe(pid_sub);
     nh.subscribe(cmd_sub);
     nh.advertise(raw_vel_pub);
-    nh.advertise(raw_imu_pub);
+
 
     while (!nh.connected())
     {
@@ -161,20 +158,6 @@ void stopBase()
     g_req_angular_vel_z = 0;
 }
 
-void publishIMU()
-{
-    // pass accelerometer data to imu object
-    raw_imu_msg.linear_acceleration = readAccelerometer();
-
-    // pass gyroscope data to imu object
-    raw_imu_msg.angular_velocity = readGyroscope();
-
-    // pass accelerometer data to imu object
-    raw_imu_msg.magnetic_field = readMagnetometer();
-
-    // publish raw_imu_msg
-    raw_imu_pub.publish(&raw_imu_msg);
-}
 
 float steer(float steering_angle)
 {
@@ -227,27 +210,7 @@ void loop()
     {
         stopBase();
     }
-    /*
-    // this block publishes the IMU data based on defined rate
-    if ((millis() - prev_imu_time) >= (1000 / IMU_PUBLISH_RATE))
-    {
-        // sanity check if the IMU is connected
-        if (!imu_is_initialized)
-        {
-            imu_is_initialized = initIMU();
-
-            if (imu_is_initialized)
-                nh.loginfo("IMU Initialized");
-            else
-                nh.logfatal("IMU failed to initialize. Check your IMU connection.");
-        }
-        else
-        {
-            publishIMU();
-        }
-        prev_imu_time = millis();
-    }
-    */
+    
     // this block displays the encoder readings. change DEBUG to 0 if you don't want to display
     if (DEBUG)
     {
